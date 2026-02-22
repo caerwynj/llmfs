@@ -1,0 +1,5 @@
+o.out
+*.o
+*.dis
+*.sbl
+*.gguf
