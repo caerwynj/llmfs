@@ -365,7 +365,7 @@ fsread(Qid qid, char *buf, ulong *n, vlong off)
 					pump_generation(c);
 				}
 			} else {
-				if(c->read_pos >= c->output_len && c->state == StateGenerating) {
+				while(c->read_pos >= c->output_len && c->state == StateGenerating) {
 					pump_generation(c);
 				}
 			}
@@ -581,12 +581,15 @@ main(int argc, char **argv)
 		exits("model failed");
 	}
 
-	printf("Initializing styx\n");
+	printf("Initializing styx... server=%p ops=%p port=%s\n", &s, &ops, port);
 	server = &s;
 	styxinit(&s, &ops, port, 0777, 1);
 	
+	printf("Adding root clone...\n");
 	styxaddfile(&s, Qroot, Qclone, "clone", 0666, "inferno");
+	printf("Adding root info...\n");
 	styxaddfile(&s, Qroot, Qinfo, "info", 0444, "inferno");
+	printf("Setup complete.\n");
 
 	for(;;){
 		styxwait(&s);
