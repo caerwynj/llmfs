@@ -61,6 +61,7 @@ char *checkpoint_path = NULL;
 char *global_template = NULL;
 float global_temp = 1.0f;
 float global_topp = 0.9f;
+int global_ctx_size = 2048;
 
 void
 rebuild_sampler(LlmConn *c)
@@ -124,6 +125,7 @@ newconn(void)
 	conns = c;
 	
 	struct llama_context_params ctx_params = llama_context_default_params();
+	ctx_params.n_ctx = global_ctx_size;
 	c->ctx = llama_init_from_model(global_model, ctx_params);
 	rebuild_sampler(c);
 	
@@ -211,8 +213,10 @@ fsclose(Qid qid, int mode)
 					c->prompt_tokens = malloc(c->num_prompt_tokens * sizeof(llama_token));
 					llama_tokenize(llama_model_get_vocab(global_model), c->prompt_buf, strlen(c->prompt_buf), c->prompt_tokens, c->num_prompt_tokens, true, true);
 					
+					llama_memory_clear(llama_get_memory(c->ctx), true);
 					llama_batch batch = llama_batch_get_one(c->prompt_tokens, c->num_prompt_tokens);
 					llama_decode(c->ctx, batch);
+					c->pos += c->num_prompt_tokens;
 				}
 			} else if(strcmp(f->d.name, "user") == 0 && (mode & OWRITE)) {
 				// We do a naive approach for now: concatenate system + user and tokenize
@@ -222,6 +226,7 @@ fsclose(Qid qid, int mode)
 					c->generated_tokens = 0;
 					c->output_len = 0;
 					c->read_pos = 0;
+					llama_memory_clear(llama_get_memory(c->ctx), true);
 					
 					int slen = c->system_prompt ? strlen(c->system_prompt) : 0;
 					int ulen = c->user_prompt ? strlen(c->user_prompt) : 0;
@@ -271,6 +276,7 @@ fsclose(Qid qid, int mode)
 					
 					llama_batch batch = llama_batch_get_one(c->prompt_tokens, c->num_prompt_tokens);
 					llama_decode(c->ctx, batch);
+					c->pos += c->num_prompt_tokens;
 					printf("Prompt decode complete.\n");
 					free(chat_buf);
 				}
@@ -348,6 +354,7 @@ void pump_generation(LlmConn *c) {
 		
 		c->generated_tokens++;
 		llama_batch batch = llama_batch_get_one(&next_token, 1);
+		batch.pos[0] = c->pos++;
 		llama_decode(c->ctx, batch);
 	}
 }
@@ -602,13 +609,15 @@ main(int argc, char **argv)
 	for(int i = 1; i < argc; i++) {
 		if(strcmp(argv[i], "--template") == 0 && i + 1 < argc) {
 			global_template = argv[++i];
+		} else if(strcmp(argv[i], "--ctx-size") == 0 && i + 1 < argc) {
+			global_ctx_size = atoi(argv[++i]);
 		} else if(!checkpoint_path) {
 			checkpoint_path = argv[i];
 		}
 	}
 
 	if(!checkpoint_path) {
-		fprintf(stderr, "Usage: llmfs [--template <name>] <gguf model>\n");
+		fprintf(stderr, "Usage: llmfs [--template <name>] [--ctx-size <size>] <gguf model>\n");
 		exits("usage");
 	}
 	
