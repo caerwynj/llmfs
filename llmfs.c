@@ -353,9 +353,15 @@ void pump_generation(LlmConn *c) {
 		}
 		
 		c->generated_tokens++;
-		llama_batch batch = llama_batch_get_one(&next_token, 1);
+		llama_batch batch = llama_batch_init(1, 0, 1);
+		batch.token[0] = next_token;
 		batch.pos[0] = c->pos++;
+		batch.n_seq_id[0] = 1;
+		batch.seq_id[0][0] = 0;
+		batch.logits[0] = 1;
+		batch.n_tokens = 1;
 		llama_decode(c->ctx, batch);
+		llama_batch_free(batch);
 	}
 }
 
