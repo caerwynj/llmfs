@@ -57,7 +57,8 @@ LlmConn *conns;
 int next_conn_id = 1;
 
 struct llama_model *global_model;
-char *checkpoint_path;
+char *checkpoint_path = NULL;
+char *global_template = NULL;
 float global_temp = 1.0f;
 float global_topp = 0.9f;
 
@@ -224,19 +225,53 @@ fsclose(Qid qid, int mode)
 					
 					int slen = c->system_prompt ? strlen(c->system_prompt) : 0;
 					int ulen = c->user_prompt ? strlen(c->user_prompt) : 0;
-					int bsize = slen + ulen + 256;
-					char *chat_buf = malloc(bsize);
-					snprintf(chat_buf, bsize, "<|system|>\n%s<|user|>\n%s<|assistant|>\n", 
-						c->system_prompt ? c->system_prompt : "", 
-						c->user_prompt ? c->user_prompt : "");
+					char *chat_buf = NULL;
+					int chat_buf_len = 0;
+					
+					if(global_template) {
+						struct llama_chat_message msgs[2];
+						int n_msg = 0;
+						if (c->system_prompt && slen > 0) {
+							msgs[n_msg].role = "system";
+							msgs[n_msg].content = c->system_prompt;
+							n_msg++;
+						}
+						if (c->user_prompt && ulen > 0) {
+							msgs[n_msg].role = "user";
+							msgs[n_msg].content = c->user_prompt;
+							n_msg++;
+						}
 						
-					c->num_prompt_tokens = -llama_tokenize(llama_model_get_vocab(global_model), chat_buf, strlen(chat_buf), NULL, 0, true, true);
+						int bsize = llama_chat_apply_template(global_template, msgs, n_msg, true, NULL, 0);
+						printf("Template application dry-run req size: %d\n", bsize);
+						if (bsize > 0) {
+							chat_buf = malloc(bsize + 1);
+							chat_buf_len = llama_chat_apply_template(global_template, msgs, n_msg, true, chat_buf, bsize + 1);
+							if(chat_buf_len >= 0) chat_buf[chat_buf_len] = '\0';
+							printf("Template applied dynamically!\n");
+						}
+					}
+					
+					if(!chat_buf) {
+						int bsize = slen + ulen + 256;
+						chat_buf = malloc(bsize);
+						chat_buf_len = snprintf(chat_buf, bsize, "<|system|>\n%s<|user|>\n%s<|assistant|>\n", 
+							c->system_prompt ? c->system_prompt : "", 
+							c->user_prompt ? c->user_prompt : "");
+						printf("Fell back to naive template!\n");
+					}
+					
+					printf("Final chat buf: \n%s\n", chat_buf);
+						
+					c->num_prompt_tokens = -llama_tokenize(llama_model_get_vocab(global_model), chat_buf, chat_buf_len, NULL, 0, true, true);
+					printf("Calculated prompt tokens: %d\n", c->num_prompt_tokens);
 					free(c->prompt_tokens);
 					c->prompt_tokens = malloc(c->num_prompt_tokens * sizeof(llama_token));
-					llama_tokenize(llama_model_get_vocab(global_model), chat_buf, strlen(chat_buf), c->prompt_tokens, c->num_prompt_tokens, true, true);
+					llama_tokenize(llama_model_get_vocab(global_model), chat_buf, chat_buf_len, c->prompt_tokens, c->num_prompt_tokens, true, true);
 					
 					llama_batch batch = llama_batch_get_one(c->prompt_tokens, c->num_prompt_tokens);
 					llama_decode(c->ctx, batch);
+					printf("Prompt decode complete.\n");
 					free(chat_buf);
 				}
 			}
@@ -473,9 +508,10 @@ fswrite(Qid qid, char *buf, ulong *n, vlong off)
 			c->prompt_buf[c->prompt_len] = '\0';
 			return nil;
 		} else if(strcmp(f->d.name, "system") == 0) {
-			c->system_prompt = realloc(c->system_prompt, *n + 1);
-			memmove(c->system_prompt, buf, *n);
-			c->system_prompt[*n] = '\0';
+			int clen = c->system_prompt ? strlen(c->system_prompt) : 0;
+			c->system_prompt = realloc(c->system_prompt, clen + *n + 1);
+			memmove(c->system_prompt + clen, buf, *n);
+			c->system_prompt[clen + *n] = '\0';
 			return nil;
 		} else if(strcmp(f->d.name, "user") == 0) {
 			if(c->state != StatePrompting) {
@@ -485,8 +521,8 @@ fswrite(Qid qid, char *buf, ulong *n, vlong off)
 					c->user_prompt = NULL;
 				}
 			}
-			c->user_prompt = realloc(c->user_prompt, (c->user_prompt ? strlen(c->user_prompt) : 0) + *n + 1);
 			int clen = c->user_prompt ? strlen(c->user_prompt) : 0;
+			c->user_prompt = realloc(c->user_prompt, clen + *n + 1);
 			memmove(c->user_prompt + clen, buf, *n);
 			c->user_prompt[clen + *n] = '\0';
 			return nil;
@@ -563,10 +599,16 @@ main(int argc, char **argv)
 	Styxserver s;
 	char *port = "6701";
 
-	if(argc >= 2) {
-		checkpoint_path = argv[1];
-	} else {
-		fprintf(stderr, "Usage: llmfs <gguf model>\n");
+	for(int i = 1; i < argc; i++) {
+		if(strcmp(argv[i], "--template") == 0 && i + 1 < argc) {
+			global_template = argv[++i];
+		} else if(!checkpoint_path) {
+			checkpoint_path = argv[i];
+		}
+	}
+
+	if(!checkpoint_path) {
+		fprintf(stderr, "Usage: llmfs [--template <name>] <gguf model>\n");
 		exits("usage");
 	}
 	
